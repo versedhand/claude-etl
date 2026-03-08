@@ -41,9 +41,9 @@ HOMES_PATHS = [
 HOMES_BASE = next((p for p in HOMES_PATHS if p.exists()), HOMES_PATHS[0])
 DEVICES = ["blue", "black", "red", "recovered-nov", "magenta"]
 DB_CONFIG = {
-    "host": "100.86.218.108",
+    "host": "100.127.104.75",
     "port": 5432,
-    "dbname": "personal_data",
+    "dbname": "lifedb",
     "user": "postgres",
     "password": os.environ.get("LIFEDB_PASSWORD", "StrongPassword123"),
 }

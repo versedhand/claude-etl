@@ -24,9 +24,9 @@ except ImportError:
 
 # Configuration
 DB_CONFIG = {
-    "host": "100.86.218.108",
+    "host": "100.127.104.75",
     "port": 5432,
-    "dbname": "personal_data",
+    "dbname": "lifedb",
     "user": "postgres",
     "password": os.environ.get("LIFEDB_PASSWORD", "StrongPassword123"),
 }

@@ -26,15 +26,15 @@ else:
     BASE = Path.home() / "obs"
 
 # Source paths
-DROPBOX_SOURCE = Path("/mnt/d/Dropbox/var/exports-chatgpt/zipped")
+DROPBOX_SOURCE = Path("/mnt/d/gdrive/var/exports-chatgpt/zipped")
 INBOX_PATH = BASE / "life-var/inbox/chatgpt-exports"
 PROCESSED_PATH = INBOX_PATH / "processed"
 ATTACHMENTS_PATH = BASE / "life-var/cache/chatgpt-attachments"
 
 DB_CONFIG = {
-    "host": "100.86.218.108",
+    "host": "100.127.104.75",
     "port": 5432,
-    "dbname": "personal_data",
+    "dbname": "lifedb",
     "user": "postgres",
     "password": os.environ.get("LIFEDB_PASSWORD", "StrongPassword123"),
 }
@@ -540,7 +540,7 @@ def main():
             zip_files.extend(sorted(INBOX_PATH.glob("*.zip")))
 
         if args.source in ('dropbox', 'both') and DROPBOX_SOURCE.exists():
-            # Only add Dropbox files not already processed
+            # Only add gdrive files not already processed
             for zf in sorted(DROPBOX_SOURCE.glob("*.zip")):
                 if zf not in zip_files:
                     zip_files.append(zf)

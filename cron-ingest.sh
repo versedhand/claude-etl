@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude ETL hourly cron job
-# Location: /srv/obs/life-code/claude-etl/cron-ingest.sh (server)
-# Crontab: 0 * * * * /srv/obs/life-code/claude-etl/cron-ingest.sh
+# Location: /home/rrobinson/projects/claude-etl/cron-ingest.sh (server)
+# Crontab: 0 * * * * /home/rrobinson/projects/claude-etl/cron-ingest.sh
 #
 # Pipeline:
 #   1. code_ingest.py - Ingest Claude Code conversations (synced via Obsidian)
@@ -14,7 +14,7 @@
 set -e
 
 # Server paths
-SCRIPT_DIR="/srv/obs/life-code/claude-etl"
+SCRIPT_DIR="/home/rrobinson/projects/claude-etl"
 LOG_DIR="/srv/obs/life-var/log"
 LOG_FILE="$LOG_DIR/claude-etl.log"
 LOCK_FILE="/tmp/claude-etl.lock"

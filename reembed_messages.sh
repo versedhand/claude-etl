@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch 24 parallel workers to re-embed message_embeddings
-# Run from: /mnt/d/obs/life-code/claude-etl
+# Run from: /home/rrobinson/projects/claude-etl
 
 NUM_WORKERS=24
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

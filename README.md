@@ -168,7 +168,7 @@ Canonical branches only, both sources merged.
 | HOMES_BASE | `/mnt/d/obs/life-var/homes` |
 | INBOX | `/mnt/d/obs/life-var/inbox/claude-web-exports` |
 | DEVICES | blue, black, red, magenta |
-| DB_HOST | 100.86.218.108 (Tailscale) |
+| DB_HOST | 100.127.104.75 (Tailscale, CT 103) |
 | CUTOFF_DATE | 2025-10-01 (archive threshold) |
 
 ## Notes
