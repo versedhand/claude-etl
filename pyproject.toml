@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-etl"
+version = "1.0.0"
+description = "Claude conversation ETL pipeline — ingest, embed, chunk"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "openai>=2.0",
+    "psycopg2-binary>=2.9",
+    "tqdm>=4.60",
+]
+
+[project.scripts]
+claude-etl = "claude_etl.process_all:main"
+claude-web-ingest = "claude_etl.web_ingest:main"
+claude-code-ingest = "claude_etl.code_ingest:main"
+claude-chatgpt-ingest = "claude_etl.chatgpt_ingest:main"
+claude-embed = "claude_etl.embed:main"
+claude-chunk = "claude_etl.chunk_conversations:main"
+claude-normalize = "claude_etl.normalize:main"
+
+[tool.setuptools.packages.find]
+include = ["claude_etl*"]

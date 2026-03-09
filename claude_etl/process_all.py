@@ -3,9 +3,9 @@
 Full Claude ETL pipeline - run this after dropping a new web export.
 
 Usage:
-    python3 process_all.py           # Full pipeline
-    python3 process_all.py --dry-run # Show what would be processed
-    python3 process_all.py --status  # Just show current stats
+    claude-etl                # Full pipeline
+    claude-etl --dry-run      # Show what would be processed
+    claude-etl --status       # Just show current stats
 
 Steps:
 1. Ingest web exports (moves processed to processed/)
@@ -17,15 +17,16 @@ import subprocess
 import sys
 import os
 
-# Change to script directory
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-
-def run_step(name: str, cmd: list, dry_run: bool = False):
-    """Run a pipeline step."""
+def run_step(name: str, module: str, extra_args: list = None, dry_run: bool = False):
+    """Run a pipeline step as a subprocess using python -m."""
     print(f"\n{'='*60}")
     print(f"Step: {name}")
     print(f"{'='*60}")
+
+    cmd = [sys.executable, "-m", f"claude_etl.{module}"]
+    if extra_args:
+        cmd.extend(extra_args)
 
     if dry_run:
         print(f"  Would run: {' '.join(cmd)}")
@@ -132,16 +133,16 @@ def main():
 
     # Step 1: Ingest web exports
     if not args.skip_ingest:
-        if not run_step("Ingest Web Exports", ["python3", "web_ingest.py"], args.dry_run):
+        if not run_step("Ingest Web Exports", "web_ingest", dry_run=args.dry_run):
             print("\nIngestion failed, but continuing...")
 
     # Step 2: Generate embeddings
     if not args.skip_embed:
-        run_step("Generate Embeddings", ["python3", "embed.py", "--continuous"], args.dry_run)
+        run_step("Generate Embeddings", "embed", ["--continuous"], dry_run=args.dry_run)
 
     # Step 3: Chunk conversations
     if not args.skip_chunk:
-        run_step("Chunk Conversations", ["python3", "chunk_conversations.py", "--continuous"], args.dry_run)
+        run_step("Chunk Conversations", "chunk_conversations", ["--continuous"], dry_run=args.dry_run)
 
     # Final stats
     if not args.dry_run:
