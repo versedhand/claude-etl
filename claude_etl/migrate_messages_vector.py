@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Migrate message_embeddings.embedding from 1536 to 3072 dims."""
 
+import os
 import psycopg2
 
 conn = psycopg2.connect(
@@ -8,7 +9,7 @@ conn = psycopg2.connect(
     port=5432,
     dbname='lifedb',
     user='postgres',
-    password='StrongPassword123'
+    password=os.environ['LIFEDB_PASSWORD']
 )
 conn.autocommit = True
 cur = conn.cursor()

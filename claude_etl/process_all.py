@@ -48,7 +48,7 @@ def get_stats():
         "port": 5432,
         "dbname": "lifedb",
         "user": "postgres",
-        "password": os.environ.get("LIFEDB_PASSWORD", "StrongPassword123"),
+        "password": os.environ["LIFEDB_PASSWORD"],
     }
 
     conn = psycopg2.connect(**DB_CONFIG)
