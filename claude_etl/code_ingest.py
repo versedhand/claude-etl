@@ -35,8 +35,7 @@ def normalize_conversation_id(conv_id: str) -> str:
 
 # Configuration - check multiple base paths
 HOMES_PATHS = [
-    Path("/mnt/d/obs/life-var/homes"),  # Desktop (WSL)
-    Path("/srv/obs/life-var/homes"),    # Server
+    Path.home() / "corpus/isaac-workspace-corpus/var/homes",
 ]
 HOMES_BASE = next((p for p in HOMES_PATHS if p.exists()), HOMES_PATHS[0])
 DEVICES = ["blue", "black", "red", "recovered-nov", "magenta"]
@@ -116,7 +115,7 @@ def get_file_mtime(filepath: Path) -> datetime:
 
 
 def extract_project_path(folder_name: str) -> str:
-    """Convert folder name back to path (e.g., '-mnt-d-obs-life' -> '/mnt/d/obs/life')."""
+    """Convert folder name back to path (e.g., '-home-rrobinson-corpus-isaac-life-corpus' -> '/home/rrobinson/corpus/isaac-life-corpus')."""
     if folder_name.startswith('-'):
         return folder_name.replace('-', '/', 1).replace('-', '/')
     return folder_name

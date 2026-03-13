@@ -32,8 +32,7 @@ DB_CONFIG = {
 }
 
 API_KEY_PATHS = [
-    Path("/mnt/d/obs/life-etc/api-keys/openai.key"),  # Desktop (WSL)
-    Path("/srv/obs/life-etc/api-keys/openai.key"),    # Server
+    Path.home() / "corpus/isaac-workspace-corpus/etc/api-keys/openai.key",  # Desktop (WSL) / Server
 ]
 EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMS = 3072

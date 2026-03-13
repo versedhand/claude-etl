@@ -2,7 +2,7 @@
 """
 Claude Web conversation ingestion script.
 
-Processes ZIP exports from /life-var/inbox/claude-web-exports/ and loads into LifeDB.
+Processes ZIP exports from ~/corpus/isaac-workspace-corpus/var/inbox/claude-web-exports/ and loads into LifeDB.
 Branching logic adapted from claude-chats/parsers/claude_export.py.
 """
 
@@ -17,13 +17,7 @@ import psycopg2
 from psycopg2.extras import Json
 
 # Configuration
-# Auto-detect inbox path based on environment
-if Path("/mnt/d/obs").exists():  # WSL/Windows
-    INBOX_PATH = Path("/mnt/d/obs/life-var/inbox/claude-web-exports")
-elif Path("/srv/obs").exists():  # Linux server
-    INBOX_PATH = Path("/srv/obs/life-var/inbox/claude-web-exports")
-else:  # Fallback to home
-    INBOX_PATH = Path.home() / "obs/life-var/inbox/claude-web-exports"
+INBOX_PATH = Path.home() / "corpus/isaac-workspace-corpus/var/inbox/claude-web-exports"
 PROCESSED_PATH = INBOX_PATH / "processed"
 # CUTOFF_DATE removed - all conversations go to claude_web_raw now (2026-01-21)
 # Archive table is deprecated, data migrated to raw

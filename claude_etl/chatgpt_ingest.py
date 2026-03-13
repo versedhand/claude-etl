@@ -17,19 +17,14 @@ from typing import Optional, List, Dict, Any, Tuple
 import psycopg2
 from psycopg2.extras import Json
 
-# Configuration - auto-detect paths based on environment
-if Path("/mnt/d/obs").exists():  # WSL/Windows
-    BASE = Path("/mnt/d/obs")
-elif Path("/srv/obs").exists():  # Linux server
-    BASE = Path("/srv/obs")
-else:
-    BASE = Path.home() / "obs"
+# Configuration
+BASE = Path.home() / "corpus/isaac-workspace-corpus"
 
 # Source paths
 DROPBOX_SOURCE = Path("/mnt/d/gdrive/var/exports-chatgpt/zipped")
-INBOX_PATH = BASE / "life-var/inbox/chatgpt-exports"
+INBOX_PATH = BASE / "var/inbox/chatgpt-exports"
 PROCESSED_PATH = INBOX_PATH / "processed"
-ATTACHMENTS_PATH = BASE / "life-var/cache/chatgpt-attachments"
+ATTACHMENTS_PATH = BASE / "var/cache/chatgpt-attachments"
 
 DB_CONFIG = {
     "host": "100.127.104.75",

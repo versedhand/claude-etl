@@ -26,8 +26,7 @@ DB_CONFIG = {
 }
 
 API_KEY_PATHS = [
-    Path("/mnt/d/obs/life-etc/api-keys/openai.key"),
-    Path("/srv/obs/life-etc/api-keys/openai.key"),
+    Path.home() / "corpus/isaac-workspace-corpus/etc/api-keys/openai.key",
 ]
 
 EMBEDDING_MODEL = "text-embedding-3-large"

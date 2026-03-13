@@ -15,8 +15,8 @@ set -e
 
 # Server paths
 SCRIPT_DIR="/home/rrobinson/projects/claude-etl"
-LOG_DIR="/srv/obs/life-var/log"
-LOG_FILE="$LOG_DIR/claude-etl.log"
+LOG_DIR="$HOME/corpus/isaac-workspace-corpus/var/log"
+LOG_FILE="$LOG_DIR/claude-etl-ingest.log"
 LOCK_FILE="/tmp/claude-etl.lock"
 
 # Ensure log directory exists

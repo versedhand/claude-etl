@@ -51,7 +51,7 @@ Ingests Claude Web exports from ZIP files in inbox.
 
 ```bash
 # Drop ZIP exports in inbox
-cp ~/Downloads/data-*.zip /mnt/d/obs/life-var/inbox/claude-web-exports/
+cp ~/Downloads/data-*.zip ~/corpus/isaac-workspace-corpus/var/inbox/claude-web-exports/
 
 # Dry run - count conversations/messages
 python3 web_ingest.py --dry-run
@@ -117,7 +117,7 @@ python3 embed.py --quiet
 - Batches of 100 with rate limiting
 - HNSW index for fast vector search
 
-**Requires:** `OPENAI_API_KEY` env var or `/life-etc/api-keys/openai.key`
+**Requires:** `OPENAI_API_KEY` env var or `~/corpus/isaac-workspace-corpus/etc/api-keys/openai.key`
 
 ## Schema Architecture
 
@@ -165,8 +165,8 @@ Canonical branches only, both sources merged.
 
 | Setting | Value |
 |---------|-------|
-| HOMES_BASE | `/mnt/d/obs/life-var/homes` |
-| INBOX | `/mnt/d/obs/life-var/inbox/claude-web-exports` |
+| HOMES_BASE | `~/corpus/isaac-workspace-corpus/var/homes` |
+| INBOX | `~/corpus/isaac-workspace-corpus/var/inbox/claude-web-exports` |
 | DEVICES | blue, black, red, magenta |
 | DB_HOST | 100.127.104.75 (Tailscale, CT 103) |
 | CUTOFF_DATE | 2025-10-01 (archive threshold) |

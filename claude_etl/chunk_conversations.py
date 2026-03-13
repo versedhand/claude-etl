@@ -39,8 +39,7 @@ DB_CONFIG = {
 
 # Check multiple paths for API key (desktop vs server)
 API_KEY_PATHS = [
-    Path("/mnt/d/obs/life-etc/api-keys/openai.key"),  # Desktop (WSL)
-    Path("/srv/obs/life-etc/api-keys/openai.key"),     # Server
+    Path.home() / "corpus/isaac-workspace-corpus/etc/api-keys/openai.key",
 ]
 EMBEDDING_MODEL = "text-embedding-3-large"
 SUMMARY_MODEL = "gpt-4o-mini"
