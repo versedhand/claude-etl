@@ -25,7 +25,7 @@ PROCESSED_PATH = INBOX_PATH / "processed"
 DB_CONFIG = {
     "host": "100.127.104.75",
     "port": 5432,
-    "dbname": "lifedb",
+    "dbname": "conversationsdb",
     "user": "postgres",
     "password": os.environ["LIFEDB_PASSWORD"],
 }
@@ -162,7 +162,7 @@ def ingest_conversation(cur, conv: dict, source_file: str) -> tuple[int, int, in
 
     # Check if conversation exists and compare updated_at
     cur.execute(f"""
-        SELECT updated_at FROM {table} WHERE conversation_id = %s::uuid
+        SELECT updated_at FROM {table} WHERE conversation_id = %s
     """, (conv['uuid'],))
     existing = cur.fetchone()
 
@@ -186,7 +186,7 @@ def ingest_conversation(cur, conv: dict, source_file: str) -> tuple[int, int, in
                 data = %s,
                 source_file = %s,
                 ingested_at = NOW()
-            WHERE conversation_id = %s::uuid
+            WHERE conversation_id = %s
         """, (
             conv['name'],
             conv['updated_at'],
@@ -201,7 +201,7 @@ def ingest_conversation(cur, conv: dict, source_file: str) -> tuple[int, int, in
         cur.execute(f"""
             INSERT INTO {table}
             (conversation_id, account_id, account_email, export_date, name, created_at, updated_at, data, source_file, ingested_at)
-            VALUES (%s::uuid, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, NOW())
         """, (
             conv['uuid'],
             account_id,
@@ -340,19 +340,20 @@ def ensure_tables(conn):
         """)
         # Archive constraint check removed - table deprecated 2026-01-21
 
-        # Ensure messages table has primary key
-        cur.execute("""
-            DO $$ BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'claude_web_messages_pkey') THEN
-                    ALTER TABLE claude_web_messages ADD PRIMARY KEY (uuid);
-                END IF;
-            END $$;
-        """)
-
-        # Indexes
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cwm_conversation ON claude_web_messages(conversation_uuid)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cwm_parent ON claude_web_messages(parent_message_uuid)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cwm_created ON claude_web_messages(created_at)")
+        # Ensure messages table has primary key (skip if foreign table)
+        cur.execute("SELECT foreign_table_name FROM information_schema.foreign_tables WHERE foreign_table_name = 'claude_web_messages'")
+        is_foreign = cur.fetchone() is not None
+        if not is_foreign:
+            cur.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'claude_web_messages_pkey') THEN
+                        ALTER TABLE claude_web_messages ADD PRIMARY KEY (uuid);
+                    END IF;
+                END $$;
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cwm_conversation ON claude_web_messages(conversation_uuid)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cwm_parent ON claude_web_messages(parent_message_uuid)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cwm_created ON claude_web_messages(created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_cwr_created ON claude_web_raw(created_at)")
         # Archive index removed - table deprecated 2026-01-21
 
