@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import psycopg2
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 
 from .parser import ParsedConversation, ParsedMessage
 
@@ -143,22 +143,28 @@ def upsert_conversation(
             )
             conv_id = cur.fetchone()[0]
 
-        # Insert all messages (with content hash for embedding lookup)
+        # Batch insert all messages (execute_values is ~100x faster than individual INSERTs)
+        rows = []
         for msg in parsed.messages:
             ch = hashlib.sha256(msg.content.encode("utf-8")).hexdigest() if msg.content else None
-            cur.execute(
+            rows.append((
+                conv_id, msg.uuid, msg.parent_uuid, msg.role,
+                msg.content, msg.thinking,
+                Json(msg.tool_calls) if msg.tool_calls else None,
+                Json(msg.tool_results) if msg.tool_results else None,
+                msg.is_sidechain, msg.timestamp, msg.sequence_num, ch,
+            ))
+
+        if rows:
+            execute_values(
+                cur,
                 """INSERT INTO messages
                     (conversation_id, uuid, parent_uuid, role, content,
                      thinking, tool_calls, tool_results, is_sidechain,
                      timestamp, sequence_num, content_hash)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    conv_id, msg.uuid, msg.parent_uuid, msg.role,
-                    msg.content, msg.thinking,
-                    Json(msg.tool_calls) if msg.tool_calls else None,
-                    Json(msg.tool_results) if msg.tool_results else None,
-                    msg.is_sidechain, msg.timestamp, msg.sequence_num, ch,
-                ),
+                VALUES %s""",
+                rows,
+                page_size=500,
             )
 
     conn.commit()
