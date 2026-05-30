@@ -144,9 +144,14 @@ def run_ingest(dry_run: bool = False):
             print(f"  Would ingest: {f}")
         return
 
-    # Step 3: Connect to DB
+    # Step 3: Connect to DB (skip schema creation on routine runs — tables already exist)
     conn = get_connection()
-    ensure_schema(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM conversations LIMIT 1")
+    except Exception:
+        conn.rollback()
+        ensure_schema(conn)
 
     # Step 4: Parse and ingest each changed file
     ingested = 0
