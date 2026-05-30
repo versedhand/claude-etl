@@ -160,10 +160,13 @@ def run_ingest(dry_run: bool = False):
     for jsonl_path in changed:
         rel_path = str(jsonl_path.relative_to(MIRROR_DIR))
         try:
+            # Compute file content hash BEFORE parsing — skip if DB already has this exact content
+            import hashlib
+            file_hash = hashlib.sha256(jsonl_path.read_bytes()).hexdigest()
+
             parsed = parse_conversation(jsonl_path)
             if not parsed.messages:
                 logger.info(f"Skipping empty: {rel_path}")
-                # Still update state so we don't re-check
                 state.setdefault("files", {})[rel_path] = {
                     "mtime": jsonl_path.stat().st_mtime,
                     "size": jsonl_path.stat().st_size,
@@ -171,12 +174,28 @@ def run_ingest(dry_run: bool = False):
                 }
                 continue
 
+            # Check if this exact file content was already ingested (dedup across paths)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM conversations WHERE session_id = %s AND machine = %s AND user_name = %s AND file_hash = %s",
+                    (parsed.session_id, machine, user_name, file_hash),
+                )
+                if cur.fetchone():
+                    # Identical content already in DB — skip
+                    state.setdefault("files", {})[rel_path] = {
+                        "mtime": jsonl_path.stat().st_mtime,
+                        "size": jsonl_path.stat().st_size,
+                        "last_ingested": datetime.now(timezone.utc).isoformat(),
+                    }
+                    continue
+
             file_mtime = datetime.fromtimestamp(
                 jsonl_path.stat().st_mtime, tz=timezone.utc
             )
 
             upsert_conversation(
-                conn, parsed, user_name, machine, rel_path, file_mtime
+                conn, parsed, user_name, machine, rel_path, file_mtime,
+                file_hash=file_hash,
             )
 
             # Update state for this file

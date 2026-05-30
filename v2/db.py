@@ -96,6 +96,7 @@ def upsert_conversation(
     machine: str,
     source_file: str,
     file_mtime: Optional[datetime] = None,
+    file_hash: Optional[str] = None,
 ):
     """Insert or replace a conversation and all its messages.
 
@@ -118,12 +119,12 @@ def upsert_conversation(
                 """UPDATE conversations SET
                     project = %s, model = %s, source_file = %s,
                     started_at = %s, last_message_at = %s,
-                    message_count = %s, ingested_at = NOW(), file_mtime = %s
+                    message_count = %s, ingested_at = NOW(), file_mtime = %s, file_hash = %s
                 WHERE id = %s""",
                 (
                     parsed.project, parsed.model, source_file,
                     parsed.started_at, parsed.last_message_at,
-                    parsed.message_count, file_mtime, conv_id,
+                    parsed.message_count, file_mtime, file_hash, conv_id,
                 ),
             )
         else:
@@ -131,13 +132,13 @@ def upsert_conversation(
             cur.execute(
                 """INSERT INTO conversations
                     (session_id, user_name, machine, project, model, source_file,
-                     started_at, last_message_at, message_count, file_mtime)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     started_at, last_message_at, message_count, file_mtime, file_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id""",
                 (
                     parsed.session_id, user_name, machine, parsed.project,
                     parsed.model, source_file, parsed.started_at,
-                    parsed.last_message_at, parsed.message_count, file_mtime,
+                    parsed.last_message_at, parsed.message_count, file_mtime, file_hash,
                 ),
             )
             conv_id = cur.fetchone()[0]
