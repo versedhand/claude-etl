@@ -1,13 +1,14 @@
 """Migrate Claude Web conversations from old DB raw tables to conversationsdb_v2."""
+import os
 import psycopg2
 from psycopg2.extras import execute_values
 import time
 import hashlib
 
 OLD_DB = {"host": "100.127.104.75", "port": 5432, "dbname": "conversationsdb",
-          "user": "postgres", "password": "StrongPassword123"}
+          "user": "postgres", "password": os.environ["POSTGRES_PASSWORD"]}
 NEW_DB = {"host": "100.127.104.75", "port": 5432, "dbname": "conversationsdb_v2",
-          "user": "conversations_writer", "password": "ConvWriter2026!"}
+          "user": "conversations_writer", "password": os.environ["CONVERSATIONS_DB_PASSWORD"]}
 
 old = psycopg2.connect(**OLD_DB)
 new = psycopg2.connect(**NEW_DB)
