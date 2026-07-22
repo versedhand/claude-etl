@@ -103,6 +103,10 @@ def find_changed_files(state: dict) -> list[Path]:
 
     for jsonl in MIRROR_DIR.rglob("*.jsonl"):
         rel_path = str(jsonl.relative_to(MIRROR_DIR))
+        # Skip workflow/sub-agent transcripts — these are agent internals, not conversations,
+        # and their format is unparseable here (they were poisoning the whole ingest batch).
+        if "subagents/" in rel_path:
+            continue
         stat = jsonl.stat()
         mtime = stat.st_mtime
         size = stat.st_size
@@ -207,6 +211,12 @@ def run_ingest(dry_run: bool = False):
             ingested += 1
 
         except Exception as e:
+            # Clear the aborted transaction so ONE bad file can't poison every file after it
+            # (the "current transaction is aborted" cascade that silently stalled ingest).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logger.error(f"Failed to ingest {rel_path}: {e}")
             errors += 1
             # Do NOT update state for failed files — they'll retry next run
