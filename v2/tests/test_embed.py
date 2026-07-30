@@ -29,10 +29,23 @@ class TestShouldEmbed:
         assert not should_embed("user", None, None)
         assert not should_embed("user", "   ", None)
 
-    def test_short_content_skipped(self):
-        assert not should_embed("user", "ok", None)
-        assert not should_embed("user", "yes", None)
-        assert not should_embed("assistant", "Done.", None)
+    def test_short_content_IS_embedded(self):
+        """Short turns are embedded ON PURPOSE. There is no minimum length.
+
+        This test asserted the opposite until 2026-07-30. Commit 9a450e4 deliberately
+        removed MIN_CONTENT_LENGTH=20 because Isaac's ratifications are terse by design,
+        so a byte floor preferentially deleted the decision record from the index — the
+        verified case being the user turn "ok let's go" (11 chars, 2026-07-27), the Finch
+        Harbor brand ratification cited across the corpus as a decided fact, which was
+        `embedded = f` and therefore unreachable by semantic search.
+
+        The behaviour change was intended and is correct; only this assertion was left
+        behind, so the suite has been red ever since and could not act as a gate.
+        Inverted to lock in the rule that actually holds.
+        """
+        assert should_embed("user", "ok", None)
+        assert should_embed("user", "yes", None)
+        assert should_embed("assistant", "Done.", None)
 
     def test_long_content_skipped(self):
         long_text = "x" * 5001
