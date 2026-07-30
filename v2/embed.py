@@ -17,12 +17,31 @@ import psycopg2
 
 logger = logging.getLogger(__name__)
 
-# Skip rules — messages that aren't worth embedding
-MIN_CONTENT_LENGTH = 20   # skip one-word acks
-MAX_CONTENT_LENGTH = 5000  # skip paste dumps
+# Skip rules — messages that aren't worth embedding.
+#
+# NO MINIMUM LENGTH. Removed 2026-07-30 after direct measurement. The old
+# MIN_CONTENT_LENGTH = 20 meant Isaac's terse ratifications were never embedded and
+# therefore could never be returned by semantic search at all. Verified case: the user
+# turn "ok let's go" (11 chars, 2026-07-27) is the Finch Harbor brand ratification cited
+# across the corpus as a decided fact — it was `embedded = f`. His rulings are terse by
+# design, so a byte floor preferentially deletes the decision record. Cost of removing it
+# is negligible because content-addressing collapses 55,538 short user turns into 6,979
+# distinct hashes (~cents).
+#
+# HONEST LIMIT: removing the floor makes these rows ELIGIBLE, not necessarily FINDABLE.
+# A bare "ok let's go" vector matches other short affirmations, not "when did Isaac
+# approve the brand." Real fix is contextual embedding — see CHUNKING-AND-CONTEXT-GAP.md.
+MAX_CONTENT_LENGTH = 5000  # skip paste dumps — see F8 gap doc, 17,695 distinct contents
 MAX_CODE_RATIO = 0.5       # skip if >50% non-alpha (code/JSON)
 
 EMBEDDABLE_ROLES = {"user", "assistant"}
+
+# Isaac's ruling (2026-07-30): "we don't want reasoning or tool blocks indexed."
+# Structurally satisfied: the parser writes text blocks ONLY into messages.content
+# (parser.extract_text_content keeps type == "text"), while thinking / tool_use /
+# tool_result land in the separate thinking, tool_calls and tool_results columns. This
+# module reads messages.content and nothing else, so the searchable corpus is prose only.
+# Any future change that concatenates those columns into content BREAKS this ruling.
 
 
 def content_hash(text: str) -> str:
@@ -45,9 +64,6 @@ def should_embed(role: str, content: Optional[str], tool_calls: Optional[list]) 
     text = content.strip()
     length = len(text)
 
-    if length < MIN_CONTENT_LENGTH:
-        return False
-
     if length > MAX_CONTENT_LENGTH:
         return False
 
@@ -64,30 +80,41 @@ def should_embed(role: str, content: Optional[str], tool_calls: Optional[list]) 
 
 
 def compute_hashes_for_messages(conn):
-    """Populate content_hash column for all messages that don't have one yet."""
+    """Populate content_hash column for all messages that don't have one yet.
+
+    Skips empty-string content. Measured 2026-07-30: 73,175 rows had content = '' and
+    content_hash IS NULL, and ZERO rows had non-empty content without a hash. So the
+    entire remaining workload of this step was hashing the empty string 73,175 times —
+    every one producing the same constant digest — inside a single ~22-minute
+    transaction, for no benefit. An empty message is never embeddable (should_embed
+    rejects it), so its hash is never read.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, content FROM messages WHERE content_hash IS NULL AND content IS NOT NULL"
+            "SELECT id, content FROM messages "
+            "WHERE content_hash IS NULL AND content IS NOT NULL AND content <> ''"
         )
         rows = cur.fetchall()
 
     if not rows:
-        logger.info("All messages already have content hashes")
+        logger.info("All non-empty messages already have content hashes")
         return 0
 
-    updated = 0
+    # One round trip per batch instead of one per row.
+    from psycopg2.extras import execute_values
+    payload = [(msg_id, content_hash(content)) for msg_id, content in rows]
     with conn.cursor() as cur:
-        for msg_id, content in rows:
-            h = content_hash(content)
-            cur.execute(
-                "UPDATE messages SET content_hash = %s WHERE id = %s",
-                (h, msg_id)
-            )
-            updated += 1
+        execute_values(
+            cur,
+            "UPDATE messages SET content_hash = data.h "
+            "FROM (VALUES %s) AS data(id, h) WHERE messages.id = data.id::uuid",
+            payload,
+            page_size=1000,
+        )
 
     conn.commit()
-    logger.info(f"Computed {updated} content hashes")
-    return updated
+    logger.info(f"Computed {len(payload)} content hashes")
+    return len(payload)
 
 
 def find_embeddable_messages(conn) -> list[dict]:
@@ -97,18 +124,28 @@ def find_embeddable_messages(conn) -> list[dict]:
     that needs embedding.
     """
     with conn.cursor() as cur:
-        # Find unique content hashes that:
-        # 1. Don't have an embedding yet
-        # 2. Meet the should_embed criteria (checked in Python)
+        # DISTINCT ON (content_hash), not DISTINCT over 4 columns. The old form included
+        # role and the tool_calls jsonb in the distinct key, so identical content that
+        # appeared under both roles (or with differing tool_calls) yielded duplicate rows
+        # for one hash — measured 41 duplicate hashes, i.e. paid-for duplicate API calls
+        # whose second INSERT was silently dropped by ON CONFLICT DO NOTHING.
+        #
+        # Length bound is applied in SQL as well as in should_embed so the database does
+        # not ship multi-hundred-KB paste dumps over the wire only for Python to discard
+        # them. should_embed remains the single source of truth for eligibility.
         cur.execute("""
-            SELECT DISTINCT m.content_hash, m.content, m.role, m.tool_calls
+            SELECT DISTINCT ON (m.content_hash)
+                   m.content_hash, m.content, m.role, m.tool_calls
             FROM messages m
             LEFT JOIN embeddings e ON m.content_hash = e.content_hash
             WHERE m.content_hash IS NOT NULL
               AND m.content IS NOT NULL
+              AND m.content <> ''
               AND e.content_hash IS NULL
               AND m.role IN ('user', 'assistant')
-        """)
+              AND length(m.content) <= %s
+            ORDER BY m.content_hash
+        """, (MAX_CONTENT_LENGTH,))
         rows = cur.fetchall()
 
     candidates = []
@@ -199,15 +236,83 @@ def try_reuse_old_embeddings(conn, old_db_config: Optional[dict] = None) -> int:
     return reused
 
 
-def store_embedding(conn, ch: str, content_preview: str, embedding_vector: list[float]):
-    """Store a single embedding in the embeddings table."""
+def store_embedding(conn, ch: str, content_preview: str, embedding_vector: list[float],
+                    commit: bool = True):
+    """Store a single embedding. Pass commit=False to batch (see store_embeddings_batch)."""
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO embeddings (content_hash, content_preview, embedding) "
             "VALUES (%s, %s, %s::halfvec) ON CONFLICT (content_hash) DO NOTHING",
             (ch, content_preview[:200], str(embedding_vector))
         )
+    if commit:
+        conn.commit()
+
+
+def store_embeddings_batch(conn, items: list[tuple]) -> int:
+    """Store a batch of (content_hash, preview, vector) with ONE commit.
+
+    The per-row commit in store_embedding cost one fsync per embedding — 57k commits for
+    a full backfill. One commit per API batch keeps the same crash semantics that matter
+    here (a lost batch is simply re-embedded on the next run, because the driver is
+    'rows lacking an embedding') while removing the fsync storm.
+    """
+    with conn.cursor() as cur:
+        for ch, preview, vec in items:
+            cur.execute(
+                "INSERT INTO embeddings (content_hash, content_preview, embedding) "
+                "VALUES (%s, %s, %s::halfvec) ON CONFLICT (content_hash) DO NOTHING",
+                (ch, preview[:200], str(vec))
+            )
     conn.commit()
+    return len(items)
+
+
+def get_coverage(conn, days: int = 7) -> dict:
+    """Embedding coverage over the ELIGIBLE denominator for a trailing window.
+
+    THE DENOMINATOR IS THE WHOLE POINT. Coverage measured against *all* user/assistant
+    messages reads ~40-55% even in perfectly healthy months, because should_embed
+    legitimately rejects empty turns, machine dumps and >5000-char pastes. A watchdog
+    using that denominator could never be satisfied and would alarm forever.
+
+    So eligibility is decided HERE by calling should_embed — the same predicate the
+    embedder uses — rather than by re-implementing the rule in SQL. If the rule changes,
+    the gate and the thing it gates move together. That is deliberate: a checker with its
+    own private copy of the rule measures something different from what it gates, and the
+    first edit to should_embed would silently break it.
+
+    Returns eligible / embedded / pct / pending, plus scanned for transparency.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (m.content_hash)
+                   m.content_hash, m.content, m.role, m.tool_calls,
+                   (e.content_hash IS NOT NULL) AS has_embedding
+            FROM messages m
+            LEFT JOIN embeddings e ON m.content_hash = e.content_hash
+            WHERE m.role IN ('user', 'assistant')
+              AND m.content IS NOT NULL
+              AND m.timestamp > now() - make_interval(days => %s)
+            ORDER BY m.content_hash
+        """, (days,))
+        rows = cur.fetchall()
+
+    eligible = embedded = 0
+    for _ch, content, role, tool_calls, has_emb in rows:
+        if should_embed(role, content, tool_calls):
+            eligible += 1
+            if has_emb:
+                embedded += 1
+
+    return {
+        "window_days": days,
+        "scanned_distinct": len(rows),
+        "eligible": eligible,
+        "embedded": embedded,
+        "pending": eligible - embedded,
+        "pct": round(100.0 * embedded / eligible, 2) if eligible else 100.0,
+    }
 
 
 def get_embedding_stats(conn) -> dict:

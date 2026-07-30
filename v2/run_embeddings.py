@@ -17,6 +17,7 @@ from .embed import (
     content_hash,
     find_embeddable_messages,
     store_embedding,
+    store_embeddings_batch,
     get_embedding_stats,
     compute_hashes_for_messages,
 )
@@ -29,10 +30,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-OPENAI_API_KEY = os.environ.get(
-    "OPENAI_API_KEY",
-    open(os.path.expanduser("~/corpus/isaac-workspace-corpus/etc/api-keys/openai.key")).read().strip()
-)
+KEY_FILE = "~/corpus/isaac-workspace-corpus/etc/api-keys/openai.key"
+
+
+def get_api_key() -> str:
+    """Resolve the OpenAI key LAZILY.
+
+    This used to be a module-level default argument, so importing this module opened and
+    read the key file at import time. A missing or unreadable file therefore raised during
+    import — before any logging was configured — which under a scheduled run means the job
+    dies with a bare traceback to a log nobody reads, and no alarm. Worse, it broke
+    importers that only wanted a helper and never intended to call the API at all.
+    """
+    key = os.environ.get("OPENAI_API_KEY")
+    if key:
+        return key.strip()
+    path = os.path.expanduser(KEY_FILE)
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except OSError as exc:
+        raise RuntimeError(
+            f"No OpenAI key: OPENAI_API_KEY unset and {path} unreadable ({exc})"
+        ) from exc
+
+
 MODEL = "text-embedding-3-large"
 BATCH_SIZE = 100  # OpenAI supports up to 2048 inputs per request
 MAX_TOKENS_PER_BATCH = 500_000  # stay well under rate limits
@@ -49,7 +71,7 @@ def generate_embeddings_batch(client: OpenAI, texts: list[str]) -> list[list[flo
 
 def main():
     conn = get_connection()
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=get_api_key())
 
     # Step 1: Compute content hashes for any messages missing them
     logger.info("Computing content hashes...")
@@ -80,9 +102,10 @@ def main():
         try:
             embeddings = generate_embeddings_batch(client, texts)
 
-            for ch, text, emb in zip(hashes, texts, embeddings):
-                store_embedding(conn, ch, text[:200], emb)
-                total_embedded += 1
+            # ONE commit per API batch, not one per row (was 57k fsyncs on a backfill).
+            total_embedded += store_embeddings_batch(
+                conn, list(zip(hashes, (t[:200] for t in texts), embeddings))
+            )
 
             # Rough token estimate (4 chars per token)
             batch_chars = sum(len(t) for t in texts)
