@@ -27,8 +27,15 @@ from pathlib import Path
 
 from .parser import parse_conversation
 from .db import get_connection, ensure_schema, upsert_conversation
+from .subagent import is_subagent_path, subagent_identity
 
 # Configuration
+# Subagent transcripts are safe to ingest (they get their own identity — see
+# v2/subagent.py), but there are ~2,100 of them and backfilling is a bulk load
+# with embedding cost. Ingest of NEW subagent files is opt-in until that
+# backfill is scheduled deliberately: CLAUDE_ETL_INGEST_SUBAGENTS=1
+INGEST_SUBAGENTS = os.environ.get("CLAUDE_ETL_INGEST_SUBAGENTS", "0") == "1"
+
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 MIRROR_DIR = Path("/var/lib/versedhand/claude-mirror")
 STATE_FILE = Path("/var/lib/versedhand/ingest-state.json")
@@ -103,9 +110,11 @@ def find_changed_files(state: dict) -> list[Path]:
 
     for jsonl in MIRROR_DIR.rglob("*.jsonl"):
         rel_path = str(jsonl.relative_to(MIRROR_DIR))
-        # Skip workflow/sub-agent transcripts — these are agent internals, not conversations,
-        # and their format is unparseable here (they were poisoning the whole ingest batch).
-        if "subagents/" in rel_path:
+        # Subagent transcripts are NOT skipped any more. They used to be excluded
+        # because they inherit the parent's sessionId and so overwrote the parent's
+        # conversation row (D1). They now get their own path-derived identity —
+        # see v2/subagent.py — so they are ingested and searchable.
+        if is_subagent_path(rel_path) and not INGEST_SUBAGENTS:
             continue
         stat = jsonl.stat()
         mtime = stat.st_mtime
@@ -169,6 +178,15 @@ def run_ingest(dry_run: bool = False):
             file_hash = hashlib.sha256(jsonl_path.read_bytes()).hexdigest()
 
             parsed = parse_conversation(jsonl_path)
+
+            # A subagent transcript carries the PARENT's sessionId in every record.
+            # Replace it with a path-derived identity so it can never resolve to —
+            # and therefore never destroy — the parent's conversation row.
+            is_sub = is_subagent_path(rel_path)
+            parent_sid = None
+            if is_sub:
+                parsed.session_id, parent_sid = subagent_identity(rel_path)
+
             if not parsed.messages:
                 logger.info(f"Skipping empty: {rel_path}")
                 state.setdefault("files", {})[rel_path] = {
@@ -200,6 +218,7 @@ def run_ingest(dry_run: bool = False):
             upsert_conversation(
                 conn, parsed, user_name, machine, rel_path, file_mtime,
                 file_hash=file_hash,
+                is_subagent=is_sub, parent_session_id=parent_sid,
             )
 
             # Update state for this file

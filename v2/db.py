@@ -14,6 +14,16 @@ from .parser import ParsedConversation, ParsedMessage
 
 logger = logging.getLogger(__name__)
 
+
+class SourceFileCollision(Exception):
+    """Raised when a file would overwrite a conversation ingested from a DIFFERENT file.
+
+    This is the D1 guard. A subagent transcript inherits its parent's sessionId,
+    so before the identity fix it resolved to the parent's conversation row and
+    destroyed the parent's messages. Refusing loudly is always correct here:
+    two distinct transcript files must never share one conversation row.
+    """
+
 # Default config — override via environment
 DB_CONFIG = {
     "host": os.environ.get("CONVERSATIONS_DB_HOST", "100.127.104.75"),
@@ -39,8 +49,19 @@ CREATE TABLE IF NOT EXISTS conversations (
     message_count INT DEFAULT 0,
     ingested_at TIMESTAMPTZ DEFAULT NOW(),
     file_mtime TIMESTAMPTZ,
-    source TEXT DEFAULT 'code'
+    source TEXT DEFAULT 'code',
+    is_subagent BOOLEAN NOT NULL DEFAULT FALSE,
+    parent_session_id TEXT
 );
+
+-- Additive migration for databases created before subagent support.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_subagent BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS parent_session_id TEXT;
+
+-- Search filters on subagent provenance; parent lookup joins on parent_session_id.
+CREATE INDEX IF NOT EXISTS idx_conversations_is_subagent ON conversations(is_subagent);
+CREATE INDEX IF NOT EXISTS idx_conversations_parent_session
+    ON conversations(parent_session_id) WHERE parent_session_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -89,6 +110,39 @@ def ensure_schema(conn):
     logger.info("Schema ensured")
 
 
+def _basename(path: Optional[str]) -> Optional[str]:
+    return os.path.basename(str(path)) if path else None
+
+
+def _assert_same_source(stored_source: str, incoming_source: str, session_id: str):
+    """D1 guard: refuse to overwrite a conversation ingested from a different file.
+
+    The destructive DELETE below is reachable only for a row whose stored
+    source_file names the SAME transcript we are re-ingesting. A different
+    transcript claiming the same session_id is the subagent-collision bug and
+    must fail closed and loudly rather than silently replace real messages.
+
+    A path that merely MOVED (project directory renamed, mirror root changed)
+    keeps its basename, so legitimate re-ingest still succeeds.
+    Non-.jsonl sources (e.g. web imports) are out of scope for this guard.
+    """
+    if stored_source == incoming_source:
+        return
+
+    old, new = _basename(stored_source), _basename(incoming_source)
+    if old == new:
+        return  # same transcript, relocated — allowed
+
+    if not (str(stored_source).endswith(".jsonl") and str(incoming_source).endswith(".jsonl")):
+        return  # not two transcript files — guard does not apply
+
+    raise SourceFileCollision(
+        f"REFUSING to overwrite conversation session_id={session_id!r}: "
+        f"stored source_file={stored_source!r} but incoming file={incoming_source!r}. "
+        f"Two distinct transcripts cannot share one conversation row."
+    )
+
+
 def upsert_conversation(
     conn,
     parsed: ParsedConversation,
@@ -97,21 +151,28 @@ def upsert_conversation(
     source_file: str,
     file_mtime: Optional[datetime] = None,
     file_hash: Optional[str] = None,
+    is_subagent: bool = False,
+    parent_session_id: Optional[str] = None,
 ):
     """Insert or replace a conversation and all its messages.
 
     DELETE + INSERT in a transaction for idempotency.
+
+    The DELETE is gated by _assert_same_source(): it can only ever remove
+    messages that came from the very file being re-ingested.
     """
     with conn.cursor() as cur:
         # Find existing conversation
         cur.execute(
-            "SELECT id FROM conversations WHERE session_id = %s AND machine = %s AND user_name = %s",
+            "SELECT id, source_file FROM conversations WHERE session_id = %s AND machine = %s AND user_name = %s",
             (parsed.session_id, machine, user_name),
         )
         existing = cur.fetchone()
 
         if existing:
-            conv_id = existing[0]
+            conv_id, stored_source = existing
+            # Fail closed BEFORE any destructive statement runs.
+            _assert_same_source(stored_source, source_file, parsed.session_id)
             # Delete old messages (CASCADE would do this, but explicit is clearer)
             cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
             # Update conversation metadata
@@ -119,12 +180,14 @@ def upsert_conversation(
                 """UPDATE conversations SET
                     project = %s, model = %s, source_file = %s,
                     started_at = %s, last_message_at = %s,
-                    message_count = %s, ingested_at = NOW(), file_mtime = %s, file_hash = %s
+                    message_count = %s, ingested_at = NOW(), file_mtime = %s, file_hash = %s,
+                    is_subagent = %s, parent_session_id = %s
                 WHERE id = %s""",
                 (
                     parsed.project, parsed.model, source_file,
                     parsed.started_at, parsed.last_message_at,
-                    parsed.message_count, file_mtime, file_hash, conv_id,
+                    parsed.message_count, file_mtime, file_hash,
+                    is_subagent, parent_session_id, conv_id,
                 ),
             )
         else:
@@ -132,13 +195,15 @@ def upsert_conversation(
             cur.execute(
                 """INSERT INTO conversations
                     (session_id, user_name, machine, project, model, source_file,
-                     started_at, last_message_at, message_count, file_mtime, file_hash)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     started_at, last_message_at, message_count, file_mtime, file_hash,
+                     is_subagent, parent_session_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id""",
                 (
                     parsed.session_id, user_name, machine, parsed.project,
                     parsed.model, source_file, parsed.started_at,
                     parsed.last_message_at, parsed.message_count, file_mtime, file_hash,
+                    is_subagent, parent_session_id,
                 ),
             )
             conv_id = cur.fetchone()[0]
