@@ -114,27 +114,78 @@ def _basename(path: Optional[str]) -> Optional[str]:
     return os.path.basename(str(path)) if path else None
 
 
+def _stem(path: Optional[str]) -> Optional[str]:
+    base = _basename(path)
+    return base[: -len(".jsonl")] if base and base.endswith(".jsonl") else base
+
+
 def _assert_same_source(stored_source: str, incoming_source: str, session_id: str):
     """D1 guard: refuse to overwrite a conversation ingested from a different file.
 
-    The destructive DELETE below is reachable only for a row whose stored
-    source_file names the SAME transcript we are re-ingesting. A different
-    transcript claiming the same session_id is the subagent-collision bug and
-    must fail closed and loudly rather than silently replace real messages.
+    upsert_conversation() DELETEs the existing row's messages before re-inserting.
+    That DELETE must be reachable ONLY when we are demonstrably re-ingesting the
+    same transcript. Everything else fails closed and loudly.
 
-    A path that merely MOVED (project directory renamed, mirror root changed)
-    keeps its basename, so legitimate re-ingest still succeeds.
-    Non-.jsonl sources (e.g. web imports) are out of scope for this guard.
+    The rules, in order:
+
+    1. Identical source_file -> ALLOW. This is the ordinary idempotent re-ingest
+       that runs every minute; without it nothing would ever update.
+
+    2. Stored source is NOT a .jsonl transcript -> BLOCK, always.
+       A conversation that came from a legacy import, a web export zip, or the v1
+       migration was never produced by a transcript file, so no transcript file can
+       legitimately claim to be a newer version of it. The previous version of this
+       guard RETURNED EARLY here ("web imports are out of scope"), which meant any
+       of the 84,925 non-.jsonl-sourced conversations — including all 83 rows
+       migrated from v1 — could be silently overwritten by a file ingest that
+       resolved to the same (session_id, machine, user_name). Nothing needed that
+       permission: web_ingest.py does its own SQL and never calls this function,
+       so the only writers here are file ingests. Made explicit and total.
+
+    3. Incoming source is NOT a .jsonl transcript -> BLOCK.
+       Defensive: this function only ever guards the file-ingest path.
+
+    4. Two different .jsonl paths -> ALLOW ONLY a PROVABLE relocation:
+       the basename must match AND the basename stem must equal the session_id.
+       A Claude Code parent transcript is named <session-uuid>.jsonl, so a file
+       named after the very session it claims is the same conversation no matter
+       which project directory it now sits in (verified: 394/394 parent
+       transcripts on this host satisfy stem == sessionId). This preserves the
+       genuine project-directory-rename case.
+
+       Matching basenames alone is NOT sufficient and used to be accepted:
+       subagent transcripts are named 'journal.jsonl' / 'agent-<id>.jsonl' and
+       that name repeats in every workflow directory, so a bare basename match
+       let one file's messages replace an unrelated file's (demonstrated:
+       11,739 messages deleted in a rolled-back test). Subagent conversations
+       carry a path-derived 'sub:...' session_id which never equals a file stem,
+       so they can no longer satisfy this branch at all.
     """
     if stored_source == incoming_source:
+        return  # rule 1: idempotent re-ingest of the same file
+
+    stored_is_jsonl = str(stored_source).endswith(".jsonl")
+    incoming_is_jsonl = str(incoming_source).endswith(".jsonl")
+
+    if not stored_is_jsonl:
+        raise SourceFileCollision(
+            f"REFUSING to overwrite conversation session_id={session_id!r}: "
+            f"stored source_file={stored_source!r} is not a transcript file "
+            f"(legacy import, web export or migration), but incoming file="
+            f"{incoming_source!r} is. A file ingest may never replace a "
+            f"non-transcript conversation."
+        )
+
+    if not incoming_is_jsonl:
+        raise SourceFileCollision(
+            f"REFUSING to overwrite conversation session_id={session_id!r}: "
+            f"incoming source={incoming_source!r} is not a transcript file. "
+            f"This code path ingests transcripts only."
+        )
+
+    # rule 4: both are transcripts at different paths — only a provable relocation
+    if _basename(stored_source) == _basename(incoming_source) and _stem(incoming_source) == session_id:
         return
-
-    old, new = _basename(stored_source), _basename(incoming_source)
-    if old == new:
-        return  # same transcript, relocated — allowed
-
-    if not (str(stored_source).endswith(".jsonl") and str(incoming_source).endswith(".jsonl")):
-        return  # not two transcript files — guard does not apply
 
     raise SourceFileCollision(
         f"REFUSING to overwrite conversation session_id={session_id!r}: "

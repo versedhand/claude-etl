@@ -138,10 +138,36 @@ class TestSourceCollisionGuard:
 
     def test_relocated_file_still_allowed(self, conn):
         # Project directory renamed — same transcript, so this must NOT be blocked.
+        #
+        # The transcript is named after the session it carries, which is what makes
+        # the relocation provable. That is true of every real Claude Code transcript
+        # (verified 394/394 on this host: filename stem == sessionId). This test
+        # previously used session_id='D1REGRESSION-TEST' inside a file called
+        # 'abc.jsonl' — a combination that cannot occur — and so asserted that a
+        # BARE basename match was sufficient. It is not: 'journal.jsonl' repeats in
+        # every workflow directory, so that rule let one transcript's messages
+        # replace an unrelated one's. Fixture corrected to a realistic pairing.
         from v2.db import upsert_conversation
 
-        upsert_conversation(conn, _parsed(self.SID, 3, "v1"),
-                            self.USER, self.MACHINE, "proj/abc.jsonl")
-        upsert_conversation(conn, _parsed(self.SID, 7, "v2"),
-                            self.USER, self.MACHINE, "renamed/abc.jsonl")
+        sid = self.SID
+        upsert_conversation(conn, _parsed(sid, 3, "v1"),
+                            self.USER, self.MACHINE, f"proj/{sid}.jsonl")
+        upsert_conversation(conn, _parsed(sid, 7, "v2"),
+                            self.USER, self.MACHINE, f"renamed/{sid}.jsonl")
         assert self._count(conn) == 7
+
+    def test_matching_basename_without_session_link_is_blocked(self, conn):
+        # Companion to the test above: same basename, different directory, but the
+        # filename is NOT the session id, so relocation is not provable. This is the
+        # 'journal.jsonl' collision that deleted 11,739 messages in a rolled-back test.
+        from v2.db import upsert_conversation, SourceFileCollision
+
+        upsert_conversation(conn, _parsed(self.SID, 3, "real"),
+                            self.USER, self.MACHINE, "projA/journal.jsonl")
+        assert self._count(conn) == 3
+
+        with pytest.raises(SourceFileCollision):
+            upsert_conversation(conn, _parsed(self.SID, 99, "other"),
+                                self.USER, self.MACHINE, "projB/journal.jsonl")
+        conn.rollback()
+        assert self._count(conn) == 3
