@@ -194,6 +194,85 @@ def _assert_same_source(stored_source: str, incoming_source: str, session_id: st
     )
 
 
+def _content_hash(content: Optional[str]) -> Optional[str]:
+    """The content_hash we store for a message. One definition, used by both
+    the writer and the append-only prefix check, so they can never disagree."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None
+
+
+def _append_only_from(cur, conv_id: int, parsed: ParsedConversation) -> Optional[int]:
+    """Return the highest stored sequence_num IF the stored messages are a
+    provable PREFIX of `parsed`, else None.
+
+    None means "take the DELETE + reinsert path" — this function must never
+    return a number on anything it has not positively verified, because the
+    caller uses it to SKIP the delete.
+
+    Why this exists: the sync cron re-ingests a live transcript every minute,
+    and the DELETE + reinsert path rewrites every message of that session on
+    each pass. Message rows carry tool_results that run to hundreds of KB, so
+    WAL tracks BYTES OF TOAST REWRITTEN, not row count — measured 2026-08-28,
+    a 2.5 GB messages table was generating 25-33 GB of WAL per day and filling
+    the backup volume. Claude transcripts are append-only in the normal case,
+    so appending is both correct and ~95% cheaper.
+
+    ⛔ The abnormal case is real and is why every check below is required:
+    COMPACTION REWRITES A TRANSCRIPT FROM THE HEAD. After it, the file can be
+    the same length or longer while containing entirely different messages at
+    the same sequence numbers. Verifying only the tail would step straight
+    into that. So we pin BOTH ends of the stored range by uuid and re-derived
+    content hash, and bail on anything we cannot prove.
+    """
+    cur.execute(
+        "SELECT COUNT(*), MIN(sequence_num), MAX(sequence_num) FROM messages WHERE conversation_id = %s",
+        (conv_id,),
+    )
+    stored_count, min_seq, max_seq = cur.fetchone()
+
+    # Nothing stored: no prefix to extend. (The DELETE is a no-op anyway.)
+    if not stored_count:
+        return None
+
+    # The file shrank, or is unchanged in length. Either way this is not an
+    # append, and "unchanged" still needs the full path so an in-place edit
+    # cannot survive as a stale row.
+    if parsed.message_count <= stored_count:
+        return None
+
+    # Require a contiguous stored range. A gap means something already
+    # diverged from a clean prefix and we should not reason about offsets.
+    if min_seq is None or max_seq is None or (max_seq - min_seq + 1) != stored_count:
+        return None
+
+    # Index the incoming messages by sequence_num so the comparison does not
+    # assume list position equals sequence.
+    incoming = {m.sequence_num: m for m in parsed.messages}
+
+    cur.execute(
+        "SELECT sequence_num, uuid, content_hash FROM messages "
+        "WHERE conversation_id = %s AND sequence_num IN (%s, %s)",
+        (conv_id, min_seq, max_seq),
+    )
+    boundaries = cur.fetchall()
+    if len(boundaries) != len({min_seq, max_seq}):
+        return None
+
+    for seq, stored_uuid, stored_hash in boundaries:
+        msg = incoming.get(seq)
+        if msg is None:
+            return None
+        # uuid is the strong identity. Without one on BOTH sides we decline —
+        # a missing uuid must not read as a match.
+        if not stored_uuid or not msg.uuid or stored_uuid != msg.uuid:
+            return None
+        # Content must be byte-identical too, so an in-place edit that kept the
+        # uuid still falls back to the full rewrite.
+        if stored_hash != _content_hash(msg.content):
+            return None
+
+    return max_seq
+
+
 def upsert_conversation(
     conn,
     parsed: ParsedConversation,
@@ -207,7 +286,11 @@ def upsert_conversation(
 ):
     """Insert or replace a conversation and all its messages.
 
-    DELETE + INSERT in a transaction for idempotency.
+    Two paths, and the fast one is only taken on a PROVEN prefix:
+
+    - APPEND: stored messages are a verified prefix of `parsed` (see
+      `_append_only_from`) — insert only the new tail, no DELETE.
+    - REPLACE: anything else — DELETE + INSERT in a transaction, as before.
 
     The DELETE is gated by _assert_same_source(): it can only ever remove
     messages that came from the very file being re-ingested.
@@ -220,12 +303,17 @@ def upsert_conversation(
         )
         existing = cur.fetchone()
 
+        append_from = None
         if existing:
             conv_id, stored_source = existing
-            # Fail closed BEFORE any destructive statement runs.
+            # Fail closed BEFORE any destructive statement runs. Unchanged, and
+            # it still runs first on the append path — a source collision must
+            # be refused whether or not we were going to delete anything.
             _assert_same_source(stored_source, source_file, parsed.session_id)
-            # Delete old messages (CASCADE would do this, but explicit is clearer)
-            cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
+            append_from = _append_only_from(cur, conv_id, parsed)
+            if append_from is None:
+                # Delete old messages (CASCADE would do this, but explicit is clearer)
+                cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
             # Update conversation metadata
             cur.execute(
                 """UPDATE conversations SET
@@ -259,10 +347,16 @@ def upsert_conversation(
             )
             conv_id = cur.fetchone()[0]
 
-        # Batch insert all messages (execute_values is ~100x faster than individual INSERTs)
+        # Batch insert messages (execute_values is ~100x faster than individual INSERTs).
+        # On the append path only the new tail is written; on the replace path
+        # everything was just deleted, so this writes the whole conversation.
+        to_write = parsed.messages
+        if append_from is not None:
+            to_write = [m for m in parsed.messages if m.sequence_num > append_from]
+
         rows = []
-        for msg in parsed.messages:
-            ch = hashlib.sha256(msg.content.encode("utf-8")).hexdigest() if msg.content else None
+        for msg in to_write:
+            ch = _content_hash(msg.content)
             rows.append((
                 conv_id, msg.uuid, msg.parent_uuid, msg.role,
                 msg.content, msg.thinking,
@@ -284,8 +378,12 @@ def upsert_conversation(
             )
 
     conn.commit()
+    # Say WHICH path ran and how many rows it actually wrote. Without this an
+    # append and a full rewrite are indistinguishable in the log, and the whole
+    # point of the change is the difference between them.
+    mode = f"appended {len(rows)}" if append_from is not None else f"replaced {len(rows)}"
     logger.info(
         f"Upserted conversation {parsed.session_id}: "
-        f"{parsed.message_count} messages"
+        f"{parsed.message_count} messages ({mode})"
     )
     return conv_id

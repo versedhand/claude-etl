@@ -58,6 +58,18 @@ def setup_logging():
     logger.addHandler(logging.StreamHandler())
     logger.setLevel(logging.INFO)
 
+    # The modules this script drives log to their own "v2.*" loggers, which had
+    # no handler and no level — so v2.db's per-conversation line had NEVER once
+    # reached this file (measured 2026-08-28: 0 occurrences of "Upserted
+    # conversation" in the whole log). The sync's own "N ingested" line is a
+    # COUNT OF FILES and says nothing about what was written per conversation,
+    # so the one place the append-vs-replace path is visible was being discarded.
+    # Same handler, same level, so the two interleave in one timeline.
+    v2_logger = logging.getLogger("v2")
+    for h in logger.handlers:
+        v2_logger.addHandler(h)
+    v2_logger.setLevel(logging.INFO)
+
 
 def sync_mirror() -> bool:
     """rsync live .claude/projects/ to mirror directory."""
